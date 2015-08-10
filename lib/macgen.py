@@ -23,6 +23,6 @@ class Macgen(object):
             return mac
         else:
             return self.is_new_mac()
-if __name__=="__main__":
-    x = Macgen()
-    print x.is_new_mac()
+if __name__ == '__main__':
+    inst = Macgen()
+    mac = inst.is_new_mac()
