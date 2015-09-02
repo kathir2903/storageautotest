@@ -24,5 +24,6 @@ class Macgen(object):
         else:
             return self.is_new_mac()
 if __name__ == '__main__':
+    """ Create a MAC """
     inst = Macgen()
     mac = inst.is_new_mac()
