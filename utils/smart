@@ -1,0 +1,164 @@
+# ATA/SATA/SCSI drive queries and control
+
+# References:
+# http://codingrelic.geekhold.com/2012/02/ata-commands-in-python.html
+#
+# The article above explains how to issue the relevant SCSI commands via python,
+# then explains why it's a bad idea. We follow their recommendation of accessing
+# drive information by parsing output from utility programs.
+
+# http://www.tldp.org/HOWTO/archived/SCSI-Programming-HOWTO/SCSI-Programming-HOWTO-9.html
+
+import sys, subprocess
+import struct
+from collections import namedtuple
+
+###########################################################################
+### helper methods
+###########################################################################
+
+STRUCT_FORMATS = { 1: 'B', 2: 'H', 4: 'L', 8: 'Q'}
+
+def comm(cmd):
+    """run subprocess and return stdout"""
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+    out, _err = proc.communicate()
+    # pylint: disable=E1103
+    return out.strip()
+
+def i910misccounters(device, frombyte, numbytes):
+    raw = comm(['sg_logs', '-p', '0x37', '-r', device])
+    #print "from byte: %s  num bute: %s" %(frombyte, numbytes)
+    #print raw
+    value = struct.unpack('!%s' % STRUCT_FORMATS[numbytes], raw[frombyte:frombyte+numbytes])
+    return value
+
+def i910smartattrlog(device, paramcode):
+    """fetch an Intel 910 SMART parameter using SCSI LOG SENSE.
+    See http://www.intel.com/content/www/us/en/solid-state-drives/ssd-910-series-specification.html
+    """
+    raw = comm(['sg_logs', '-p', '0x2f', '-r', device])
+    attrlog = raw[8*(paramcode+1) : 8*(paramcode+2)]
+    return attrlog
+
+def i910smartattr(device, paramcode):
+    """return an Intel 910 SMART parameter log as a dictionary.
+    this method currently supports parameter codes 1,2,3,4, whose format is documented in the spec above.
+    """
+    assert paramcode in range(1, 5), 'invalid i910 SMART parameter code: %d' % paramcode
+    attrlog = i910smartattrlog(device, paramcode)
+    #print "------------- %s" %device
+    #print "------------- %s" %paramcode
+
+    SmartAttrFormat = namedtuple('SmartAttrFormat', 'paramcode bitfields paramlen sensecode sensequalifier percentofthreshold trip')
+
+    #pylint: disable-msg=W0212
+    attrdict = SmartAttrFormat._asdict(SmartAttrFormat._make(struct.unpack('!HBBBBBB', attrlog)))
+    assert attrdict['paramcode'] == paramcode, \
+        'i910 SMART data parsing error: expected parameter code %d, found %d' % (paramcode, attrdict['paramcode'])
+    return attrdict
+
+###########################################################################
+### user methods
+###########################################################################
+
+def getserial(device):
+    """get device serial number using SCSI INQUIRY"""
+    #print comm(['sg_inq', '-r', '-p', 'sn', device])
+    raw = bytearray(comm(['sg_inq', '-r', '-p', 'sn', device]))
+    return str(raw[4:]).strip()
+
+def getmodel(device):
+    """get device model name using SCSI INQUIRY"""
+    raw = bytearray(comm(['sg_inq', '-r', device]))
+    #print '%d byte response' % len(raw)
+    return str(raw[16:32]).strip()
+
+def i910temperature(device):
+    """return current temperature and reference temperature for an 910 SSD"""
+
+    attrlog = bytearray(i910smartattrlog(device, 0))
+    return {
+        'current': attrlog[2],
+        'reference': attrlog[3],
+        }
+
+def i910remainingreserve1(device):
+    """Amount of reserve (spare) blocks remaining. Threshold: 10% performance degradation"""
+    return i910smartattr(device, 1)
+
+def i910remainingreserve2(device):
+    """Amount of Reserve (spare) blocks remaining. Threshold: 99% of firmware defect limit is reached"""
+    return i910smartattr(device, 2)
+
+def i910volatilemembackuperror(device):
+    """Indication that the test of backup capacitors for power loss protection has failed.
+    Threshold: 1 capacitor self test failure"""
+    return i910smartattr(device, 3)
+
+def i910wearindicator(device):
+    """Maximum count of block erases on any band. Threshold: 100% of max spec cycles used"""
+    return i910smartattr(device, 4)
+
+def i910poweronhours(device):
+    return i910misccounters(device, frombyte=8, numbytes=4)
+
+def i910totalbytesread(device):
+    return i910misccounters(device, frombyte=12, numbytes=8)
+
+def i910totalbyteswritten(device):
+    return i910misccounters(device, frombyte=20, numbytes=8)
+
+def i910maxtemperature(device):
+    return i910misccounters(device, frombyte=28, numbytes=1)
+
+def i910numinformationexceptions(device):
+    return i910misccounters(device, frombyte=31, numbytes=1)
+
+def i910totalreadcommands(device):
+    return i910misccounters(device, frombyte=33, numbytes=8)
+
+def i910totalwritecommands(device):
+    return i910misccounters(device, frombyte=41, numbytes=8)
+
+def i910flashcorrectioncount(device):
+    return i910misccounters(device, frombyte=50, numbytes=2)
+
+
+###########################################################################
+### debug
+###########################################################################
+
+def main():
+    devicestr = sys.argv[1]
+
+    print 'serial: "%s"' % getserial(devicestr)
+    print 'model: "%s"' % getmodel(devicestr)
+    temperature = i910temperature(devicestr)
+    print 'Current Drive Temperature: %d' % (temperature['current'])
+    print 'Reference temperature: %d' % (temperature['reference'])
+    attrdict = i910remainingreserve1(devicestr)
+    print 'Remaining reserve 1(percent of threshold): %d%%' % (attrdict['percentofthreshold'])
+    print 'Remaining reserve 1 ever exceeded: %d' % (attrdict['trip'])
+    attrdict = i910remainingreserve2(devicestr)
+    print 'Remaining reserve 2(percent of threshold): %d%%' % (attrdict['percentofthreshold'])
+    print 'Remaining reserve 2 ever exceeded: %d' % (attrdict['trip'])
+    attrdict = i910volatilemembackuperror(devicestr)
+    print 'Volatile memory backup error: %d' % (attrdict['percentofthreshold'])
+    print 'Volatile memory backup previously reported an error: %d' % (attrdict['trip'])
+    attrdict = i910wearindicator(devicestr)
+    print 'Wear indicator(percent of threshold): %d%%' % (attrdict['percentofthreshold'])
+    print 'Wear indicator ever exceeded: %d' % (attrdict['trip'])
+
+    print 'Power on hours: %d' % i910poweronhours(devicestr)
+    print 'Total bytes read: %d' % i910totalbytesread(devicestr)
+    print 'Total bytes written: %d' % i910totalbyteswritten(devicestr)
+    print 'Max drive temperature: %d' % i910maxtemperature(devicestr)
+    print 'Number of information exceptions: %d' % i910numinformationexceptions(devicestr)
+    print 'Total read commands: %d' % i910totalreadcommands(devicestr)
+    print 'Total write commands: %d' % i910totalwritecommands(devicestr)
+    print 'Flash correction count: %d' % i910flashcorrectioncount(devicestr)
+
+if __name__ == '__main__':
+    main()
+
