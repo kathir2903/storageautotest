@@ -20,6 +20,8 @@ import time
 import json
 from pprint import PrettyPrinter
 pprint = PrettyPrinter(indent=2).pprint
+import pdb
+import keyring
 
 class RemoteConnect(object):
     def __init__(self, uut):
@@ -282,6 +284,10 @@ class UbuntuCmd(RemoteConnect,BuildReport):
         self.modprobe_ipmi()
         stdout = self._sendcmd('ipmitool sensor')
         return self.sensor_rep(stdout)
+
+    def nsshell(self):
+        stdout = self._sendcmd('nsshell')
+        print stdout
 
     def ipmi_fru(self):
         self.modprobe_ipmi()
@@ -721,10 +727,16 @@ class UbuntuCmd(RemoteConnect,BuildReport):
 
 def get_ssh(ip):
     try:
+        #pdb.set_trace()
         conn = paramiko.SSHClient()
         conn.load_system_host_keys()
         conn.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        _conn = conn.connect(ip, 22, 'root', 'myrootpwd')
+        """
+        keyfile = os.path.expanduser('~/.ssh/id_rsa')
+        pwd = keyring.get_password('SSH', keyfile)
+        key = paramiko.RSAKey.from_private_key_file(keyfile, password=pwd)
+        """
+        _conn = conn.connect(ip, 22, 'nsadmin', 'nsappliance', look_for_keys=False)
     except Exception, e:
         print 'Caught exception: %s: %s' %(e.__class__, e)
         conn.close()
@@ -766,9 +778,12 @@ def init_sftp_sess(dev):
         raise ValueError, "IP or connection configuration is not correct"
     return _sftp_sess
 
+
 if __name__ == "__main__":
     """ Self test the program """
-    init = UbuntuCmd('ssh:192.168.32.105')
+    init = UbuntuCmd('ssh:192.168.64.74')
+    init.nsshell()
+    """
     init.ipmi_sensor() 
     init.ipmi_fru() 
     init.dpkg_present("libib")
@@ -776,4 +791,6 @@ if __name__ == "__main__":
     for lib in libs:
         init.apt_get(lib)
     init.lshw_xml('/tmp')
+
+    """
 
